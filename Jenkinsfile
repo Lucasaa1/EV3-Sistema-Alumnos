@@ -18,9 +18,6 @@ pipeline {
 
     environment {
         PIP_DISABLE_PIP_VERSION_CHECK = '1'
-        SAST_OK = 'false'
-        DEP_OK = 'false'
-        ZAP_OK = 'false'
         ZAP_MINUTOS_ACTIVO = '3'
     }
 
