@@ -67,3 +67,14 @@ def test_metricas(client):
     assert r.status_code == 200
     assert b"http_requests_total" in r.data
     assert b"login_fallidos_total" in r.data
+
+
+def test_buscar_alumno_sql_injection(client):
+    """Verifica que una entrada SQL maliciosa no altere la consulta."""
+    respuesta = client.get(
+        "/alumnos/buscar",
+        query_string={"nombre": "' OR 1=1 --"}
+    )
+
+    assert respuesta.status_code == 200
+    assert respuesta.get_json() == []
