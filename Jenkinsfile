@@ -2,6 +2,7 @@
 //
 // Esta es la versión BASE: construye, prueba y despliega en producción.
 // Los marcadores  >>> [ETIQUETA]  indican dónde agregar las etapas de seguridad.
+
 pipeline {
     agent any
 
@@ -11,26 +12,31 @@ pipeline {
         disableConcurrentBuilds()
     }
 
-    // Revisa GitHub cada ~3 minutos: cada push (tuyo o un PR de Dependabot fusionado) dispara un build.
     triggers {
         pollSCM('H/3 * * * *')
     }
 
     environment {
         PIP_DISABLE_PIP_VERSION_CHECK = '1'
+        SAST_OK = 'false'
+        DEP_OK = 'false'
+        ZAP_OK = 'false'
+        ZAP_MINUTOS_ACTIVO = '3'
     }
 
     stages {
         stage('Build') {
             steps {
                 script {
-                    // Versión = 1.0.<nº de build>+<commit corto>: une cada despliegue con su commit (trazabilidad)
-                    def sha = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+                    def sha = sh(
+                        returnStdout: true,
+                        script: 'git rev-parse --short HEAD'
+                    ).trim()
                     env.APP_VERSION = "1.0.${env.BUILD_NUMBER}+${sha}"
                 }
-                echo "Versión de este build: ${env.APP_VERSION}"
+
+                echo "Version: ${env.APP_VERSION}"
                 sh 'git log -1 --format="Commit %h de %an: %s"'
-                // Cada build parte limpio: sin reportes viejos y con un entorno virtual nuevo
                 sh 'rm -rf .venv reports && mkdir -p reports'
                 sh 'python3 -m venv .venv'
                 sh '.venv/bin/pip install --quiet -r requirements.txt -r requirements-dev.txt'
@@ -44,31 +50,100 @@ pipeline {
             }
             post {
                 always {
-                    junit allowEmptyResults: true, testResults: 'reports/junit.xml'
+                    junit allowEmptyResults: true,
+                        testResults: 'reports/junit.xml'
                 }
             }
         }
 
-        // >>> [SEGURIDAD]: aquí van las etapas "Security Review (SAST)" y "Dependency Management"
+        stage('Security Review (SAST)') {
+            steps {
+                script {
+                    int resultado = sh(
+                        returnStatus: true,
+                        script: 'bandit -q -ll app.py > reports/bandit.txt 2>&1'
+                    )
 
-        // >>> [ZAP]: aquí van las etapas "Deploy Staging" y "DAST - OWASP ZAP"
+                    sh 'cat reports/bandit.txt'
+
+                    env.SAST_OK = resultado == 0 ? 'true' : 'false'
+
+                    if (resultado != 0) {
+                        unstable('Bandit detecto hallazgos o fallo el analisis')
+                    }
+                }
+            }
+        }
+
+        stage('Dependency Management') {
+            steps {
+                script {
+                    int resultado = sh(
+                        returnStatus: true,
+                        script: 'pip-audit -r requirements.txt > reports/pip-audit.txt 2>&1'
+                    )
+
+                    sh 'cat reports/pip-audit.txt'
+
+                    env.DEP_OK = resultado == 0 ? 'true' : 'false'
+
+                    if (resultado != 0) {
+                        unstable('Dependencias vulnerables o fallo la auditoria')
+                    }
+                }
+            }
+        }
+
+        stage('Deploy Staging') {
+            steps {
+                sh 'bash scripts/deploy.sh staging 5001'
+            }
+        }
+
+        stage('DAST - OWASP ZAP') {
+            steps {
+                script {
+                    int resultado = sh(
+                        returnStatus: true,
+                        script: 'python3 scripts/zap_scan.py http://jenkins:5001'
+                    )
+
+                    env.ZAP_OK = resultado == 0 ? 'true' : 'false'
+
+                    if (resultado != 0) {
+                        unstable('ZAP detecto alertas o no completo el analisis')
+                    }
+                }
+            }
+        }
 
         stage('Deploy Producción') {
-            // >>> [GATE]: aquí va la condición "when" que protege producción
+            when {
+                expression {
+                    return env.SAST_OK == 'true' &&
+                        env.DEP_OK == 'true' &&
+                        env.ZAP_OK == 'true'
+                }
+            }
             steps {
                 sh 'bash scripts/deploy.sh produccion 5000'
-                script { env.PRODUCCION = env.APP_VERSION }
+                script {
+                    env.PRODUCCION = env.APP_VERSION
+                }
             }
         }
     }
 
     post {
         always {
-            // Registro de trazabilidad: build <-> versión <-> commit <-> pruebas <-> hallazgos <-> despliegue
             withEnv(["RESULTADO=${currentBuild.currentResult}"]) {
                 sh 'python3 scripts/trazabilidad.py'
             }
-            archiveArtifacts artifacts: 'reports/**', allowEmptyArchive: true
+
+            archiveArtifacts(
+                artifacts: 'reports/**',
+                allowEmptyArchive: true
+            )
         }
     }
 }
