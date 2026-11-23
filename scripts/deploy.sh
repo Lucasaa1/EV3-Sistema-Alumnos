@@ -15,6 +15,25 @@ APP_VERSION="${APP_VERSION:-dev}"
 DESTINO="${DEPLOY_ROOT:-$HOME/despliegues}/$ENTORNO"
 PIDFILE="$DESTINO/app.pid"
 
+# Cargar credenciales persistentes fuera del repositorio.
+if [ "$ENTORNO" = "produccion" ]; then
+    SECRETOS="$HOME/securedev-secrets/produccion.env"
+
+    if [ ! -f "$SECRETOS" ]; then
+        echo "ERROR: falta la configuración segura de producción"
+        exit 1
+    fi
+
+    set -a
+    source "$SECRETOS"
+    set +a
+
+    if [ -z "${SECRET_KEY:-}" ] || [ -z "${ADMIN_PASSWORD_HASH:-}" ]; then
+        echo "ERROR: faltan SECRET_KEY o ADMIN_PASSWORD_HASH"
+        exit 1
+    fi
+fi
+
 echo ">> [$ENTORNO] 1/4 Deteniendo la versión anterior (si existe)"
 if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
   kill "$(cat "$PIDFILE")" || true
@@ -24,7 +43,6 @@ rm -f "$PIDFILE"
 
 echo ">> [$ENTORNO] 2/4 Copiando artefactos a $DESTINO"
 mkdir -p "$DESTINO"
-rm -f "$DESTINO/alumnos.db"
 cp app.py requirements.txt "$DESTINO/"
 
 echo ">> [$ENTORNO] 3/4 Instalando dependencias de ejecución"
